@@ -1,0 +1,6 @@
+{
+  "name": "H042 선박 배관·전장 다이어그램 분석기",
+  "description": "선박 LNG 재기화 및 HP 펌프 스키드 모듈의 P&ID·배관배치도(GAR)와 iCAMS·PSDS 전장 케이블 도면을 병렬 교차 매칭하고 설계 불일치를 검증하는 엔지니어링 워크벤치",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
