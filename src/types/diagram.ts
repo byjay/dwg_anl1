@@ -530,4 +530,127 @@ export interface DrawingChangeComparison {
   items: DrawingChangeItem[];
 }
 
+export type SpecDiscipline =
+  | 'ELECTRICAL_CABLE'
+  | 'INSTRUMENT_EX'
+  | 'MECHANICAL_PROCESS'
+  | 'MAKER_PACKAGE';
 
+export type SpecComplianceStatus = 'PASS' | 'NON_COMPLIANT' | 'HOLD_REQUIRED';
+
+export interface SpecCheckItem {
+  id: string;
+  specCode: string;
+  discipline: SpecDiscipline;
+  disciplineLabelKo: string;
+  titleKo: string;
+  standardRequired: string;
+  observedDrawingState: string;
+  status: SpecComplianceStatus;
+  severity: DiscrepancySeverity;
+  affectedTags: string[];
+  evidenceRef: string;
+  drawingId: string;
+  pageNum: number;
+  recommendationKo: string;
+  matchedLearnedRuleIds: string[];
+  posClauseSuggestion: string;
+}
+
+export interface SpecReviewReport {
+  checks: SpecCheckItem[];
+  summary: {
+    total: number;
+    passed: number;
+    nonCompliant: number;
+    holdRequired: number;
+    complianceRatePct: number;
+  };
+}
+
+export type LearnedRuleCategory =
+  | 'CABLE_SPEC'
+  | 'TAG_NAMING'
+  | 'MAKER_SCOPE'
+  | 'SAFETY_EX'
+  | 'DRAWING_RULE';
+
+export interface LearnedEngineeringRule {
+  id: string;
+  code: string;
+  category: LearnedRuleCategory;
+  categoryLabelKo: string;
+  titleKo: string;
+  patternOrCondition: string;
+  learnedLessonKo: string;
+  posRequirementClause: string;
+  severity: DiscrepancySeverity;
+  tCodeOrigin: string;
+  appliedCount: number;
+  enabled: boolean;
+  source: 'SYSTEM_LEARNED' | 'USER_LEARNED';
+  createdAt: string;
+}
+
+export type PosPackageId =
+  | 'POS-300-PKG'
+  | 'POS-VALVE-PKG'
+  | 'POS-EL-CABLE'
+  | 'POS-INST-TX'
+  | 'POS-UPLOADED-PKG';
+
+export interface PosLineItem {
+  itemNo: string;
+  materialCode: string;
+  tagRef: string;
+  description: string;
+  qty: number;
+  unit: 'EA' | 'SET' | 'LOT' | 'M';
+  technicalSpec: string;
+  drawingRef: string;
+  specStatus: SpecComplianceStatus;
+  appliedRuleNote?: string;
+  isCustom?: boolean;
+}
+
+export interface PosScopeSplitRow {
+  area: string;
+  yardScope: string;
+  makerScope: string;
+  interfaceBoundary: string;
+}
+
+export interface PurchaseOrderSpecDoc {
+  posNo: string;
+  packageId: PosPackageId;
+  packageTitleKo: string;
+  prNo: string;
+  sapMaterialGroup: string;
+  targetModule: string;
+  vendorName: string;
+  revision: string;
+  createdDate: string;
+  readinessStatus: 'RELEASE_READY' | 'HOLD_PENDING';
+  readinessSummaryKo: string;
+  lineItems: PosLineItem[];
+  scopeMatrix: PosScopeSplitRow[];
+  learnedClauses: Array<{
+    ruleCode: string;
+    titleKo: string;
+    clauseText: string;
+    origin: string;
+  }>;
+  openHoldConditions: Array<{
+    specCode: string;
+    severity: DiscrepancySeverity;
+    titleKo: string;
+    requiredAction: string;
+    evidenceRef: string;
+  }>;
+  sourceStats: {
+    loopsEvaluated: number;
+    makerProfilesCount: number;
+    specChecksTotal: number;
+    learnedRulesApplied: number;
+  };
+}

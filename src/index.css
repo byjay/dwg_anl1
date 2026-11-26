@@ -20,3 +20,18 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+@page {
+  size: A4 landscape;
+  margin: 8mm;
+}
+
+@media print {
+  body {
+    background: #ffffff;
+  }
+  .report-slide-page {
+    break-after: page;
+    page-break-after: always;
+  }
+}

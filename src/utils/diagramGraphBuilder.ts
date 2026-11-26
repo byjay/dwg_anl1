@@ -270,7 +270,16 @@ function resolvePidDrawingNodeId(unitCode: UnitCode): {
       label: 'PR-200-PID-0001 (HP Pump P&ID)',
       shortLabel: 'P&ID 200',
       anchorXRatio: 0.16,
-      anchorYRatio: 0.56,
+      anchorYRatio: 0.50,
+    };
+  }
+  if (unitCode === '300') {
+    return {
+      id: 'PR-300-PID-0001',
+      label: 'PR-300-PID-0001 (Recondenser P&ID)',
+      shortLabel: 'P&ID 300',
+      anchorXRatio: 0.16,
+      anchorYRatio: 0.72,
     };
   }
   return {
@@ -278,7 +287,7 @@ function resolvePidDrawingNodeId(unitCode: UnitCode): {
     label: '400-UTIL-SYS (Utility P&ID)',
     shortLabel: 'P&ID 400',
     anchorXRatio: 0.16,
-    anchorYRatio: 0.85,
+    anchorYRatio: 0.90,
   };
 }
 

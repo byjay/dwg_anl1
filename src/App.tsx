@@ -37,11 +37,28 @@ import {
   DEFAULT_VERIFICATION_RULES,
   evaluateVerificationRules,
 } from './utils/verificationRules';
+import { buildElectricalCommentPackage } from './utils/electricalCommentEngine';
+import {
+  SEED_LEARNED_RULES,
+  convertLearnedRulesToVerificationRules,
+  createLearnedRule,
+  createLearnedRuleFromSpecCheck,
+  learnRulesFromAnalysis,
+  loadLearnedRules,
+  saveLearnedRules,
+} from './utils/learnedKnowledgeEngine';
+import { evaluateSpecCompliance } from './utils/specReviewEngine';
 import { TopBar, WorkbenchTab } from './components/TopBar';
+import { SapSidebar } from './components/SapSidebar';
 import { CrossMatchMatrix } from './components/CrossMatchMatrix';
 import { DiffCheckWorkspace } from './components/DiffCheckWorkspace';
 import { DrawingOcrAnalyzer } from './components/DrawingOcrAnalyzer';
+import { MakerAnalysisWorkspace } from './components/MakerAnalysisWorkspace';
+import { SpecReviewWorkspace } from './components/SpecReviewWorkspace';
+import { LearnedKnowledgeWorkspace } from './components/LearnedKnowledgeWorkspace';
+import { PosGeneratorWorkspace } from './components/PosGeneratorWorkspace';
 import { RuleReviewWorkspace } from './components/RuleReviewWorkspace';
+import { ElectricalCommentReportWorkspace } from './components/ElectricalCommentReportWorkspace';
 import { LoopTraceInspector } from './components/LoopTraceInspector';
 import {
   PdfFocusTarget,
@@ -50,6 +67,11 @@ import {
 } from './components/SplitPdfViewer';
 import { FreeGeminiModel, ParallelAiVerifier } from './components/ParallelAiVerifier';
 import { AddLoopModal } from './components/AddLoopModal';
+import {
+  LearnedEngineeringRule,
+  PosPackageId,
+  SpecCheckItem,
+} from './types/diagram';
 
 interface UploadedPreviewItem {
   id: string;
@@ -78,7 +100,7 @@ const EMPTY_SUMMARY: ParallelBatchSummary = {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<WorkbenchTab>('matrix');
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>('comments');
   const [rawLoops, setRawLoops] = useState<DiagramLoopEntry[]>(H042_LOOP_SEED_DATA);
   const [evaluatedLoops, setEvaluatedLoops] = useState<EvaluatedLoopMatch[]>([]);
   const [summary, setSummary] = useState<ParallelBatchSummary>(EMPTY_SUMMARY);
@@ -126,6 +148,18 @@ export default function App() {
   const [verificationRules, setVerificationRules] = useState<VerificationRule[]>(
     DEFAULT_VERIFICATION_RULES
   );
+  const [learnedRules, setLearnedRules] = useState<LearnedEngineeringRule[]>(() =>
+    loadLearnedRules()
+  );
+  const [selectedPosPackageId, setSelectedPosPackageId] =
+    useState<PosPackageId>('POS-300-PKG');
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
+
+  useEffect(() => {
+    saveLearnedRules(learnedRules);
+  }, [learnedRules]);
 
   useEffect(() => {
     pinNotesRef.current = pinNotes;
@@ -181,15 +215,46 @@ export default function App() {
     return merged;
   }, [analysisReport, cachedEntities, registeredOcrEntities]);
 
+  const effectiveVerificationRules = useMemo(
+    () => [
+      ...verificationRules,
+      ...convertLearnedRulesToVerificationRules(learnedRules),
+    ],
+    [verificationRules, learnedRules]
+  );
+
   const ruleViolations = useMemo(
     () =>
       evaluateVerificationRules({
         evaluatedLoops,
         extractedEntities: allExtractedEntities,
-        rules: verificationRules,
+        rules: effectiveVerificationRules,
         analysisReport,
       }),
-    [evaluatedLoops, allExtractedEntities, verificationRules, analysisReport]
+    [evaluatedLoops, allExtractedEntities, effectiveVerificationRules, analysisReport]
+  );
+
+  const commentPkg = useMemo(
+    () =>
+      buildElectricalCommentPackage({
+        evaluatedLoops,
+        crossLayerDiffs,
+        ruleViolations,
+        pinNotes,
+        analysisReport,
+      }),
+    [evaluatedLoops, crossLayerDiffs, ruleViolations, pinNotes, analysisReport]
+  );
+
+  const specReport = useMemo(
+    () =>
+      evaluateSpecCompliance({
+        evaluatedLoops,
+        missingCableRows: commentPkg.missingCableRows,
+        analysisReport,
+        learnedRules,
+      }),
+    [evaluatedLoops, commentPkg.missingCableRows, analysisReport, learnedRules]
   );
 
   const customAttachments: CustomPdfAttachment[] = useMemo(
@@ -301,6 +366,7 @@ export default function App() {
     const uploadedMatch = uploadedPdfs.find((u) => u.id === drawingId);
     const isRightPane =
       drawingId.startsWith('CI-') ||
+      drawingId === 'REQ-REV1-261118' ||
       uploadedMatch?.role === 'ELECTRICAL' ||
       uploadedMatch?.hintRole === 'MAKER_VENDOR' ||
       uploadedMatch?.hintRole === 'CABLE_SCHEDULE';
@@ -446,7 +512,8 @@ export default function App() {
     const now = Date.now();
     setActivePdfLoopId(loop.id);
     const topDisc = loop.discrepancies[0];
-    const unitForPiping = loop.unitCode === '100' ? '100' : '200';
+    const unitForPiping =
+      loop.unitCode === '100' ? '100' : loop.unitCode === '300' ? '300' : '200';
     const notePayload = {
       tagRef: loop.canonicalTag,
       severity: noteOverride?.severity || topDisc?.severity || 'INFO',
@@ -633,161 +700,294 @@ export default function App() {
     summary.revisionDriftCount;
 
   const openNoteCount = pinNotes.filter((n) => n.status !== 'RESOLVED').length;
+  const specHoldOrFailCount =
+    specReport.summary.nonCompliant + specReport.summary.holdRequired;
+  const makerCount = 1 + (analysisReport?.makerProfiles?.length ?? 0);
+
+  const handleOpenPosForSpec = (check?: SpecCheckItem) => {
+    if (check) {
+      if (check.discipline === 'ELECTRICAL_CABLE') {
+        setSelectedPosPackageId('POS-EL-CABLE');
+      } else if (check.affectedTags.some((t) => t.includes('300-'))) {
+        setSelectedPosPackageId('POS-300-PKG');
+      } else if (check.discipline === 'MAKER_PACKAGE' && check.id.startsWith('SPEC-MKR-DYN-')) {
+        setSelectedPosPackageId('POS-UPLOADED-PKG');
+      } else if (check.discipline === 'INSTRUMENT_EX') {
+        setSelectedPosPackageId('POS-INST-TX');
+      }
+    }
+    setActiveTab('pos');
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-[#F5F6F7] text-slate-900">
       <TopBar
         activeTab={activeTab}
         onSelectTab={setActiveTab}
-        onOpenUploadPdf={() => setActiveTab('pdf')}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onRunParallelAi={() => void handleRunParallelAi()}
         isAiRunning={isAiRunning}
-        totalLoops={summary.totalLoops}
-        issueCount={issueCount}
-        openNoteCount={openNoteCount}
-        ruleViolationCount={ruleViolations.length}
       />
 
-      <main className="mx-auto max-w-[1440px] px-5 py-5">
-        {activeTab === 'matrix' && (
-          <CrossMatchMatrix
-            loops={evaluatedLoops}
-            filteredLoops={filteredLoops}
-            summary={summary}
-            filters={filters}
-            onChangeFilters={setFilters}
-            onRerunParallelMatch={() => void executeParallelBatch(rawLoops)}
-            onInspectLoop={handleInspectLoop}
-            onCompareInPdf={handleCompareLoopInPdf}
-            onOpenAddLoop={() => setIsAddModalOpen(true)}
-            isBatchRunning={isBatchRunning}
-            analysisReport={analysisReport}
-            diffs={crossLayerDiffs}
-            ruleViolations={ruleViolations}
-            pinNotes={pinNotes}
-          />
-        )}
+      <div className="flex min-h-[calc(100vh-3.25rem)]">
+        <SapSidebar
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          isOpen={sidebarOpen}
+          onCloseMobile={() => {
+            if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+              setSidebarOpen(false);
+            }
+          }}
+          counts={{
+            totalLoops: summary.totalLoops,
+            issueCount,
+            makerCount,
+            specHoldOrFailCount,
+            learnedRuleCount: learnedRules.filter((r) => r.enabled).length,
+            ruleViolationCount: ruleViolations.length,
+            commentSheetCount: commentPkg.commentSheets.length,
+            openNoteCount,
+          }}
+        />
 
-        {activeTab === 'diff' && (
-          <DiffCheckWorkspace
-            diffs={crossLayerDiffs}
-            uploadedPdfs={uploadedPdfs.map((u) => ({
-              id: u.id,
-              name: u.name,
-              objectUrl: u.objectUrl,
-            }))}
-            cachedEntities={allExtractedEntities}
-            onCacheExtractedEntities={(ents) =>
-              setCachedEntities((prev) => [...prev, ...ents])
-            }
-            onJumpToDrawingPage={handleJumpToDrawingPage}
-            onCompareSideBySide={handleCompareSideBySide}
-          />
-        )}
+        <main className="min-w-0 flex-1 px-4 py-5 lg:px-6 print:p-0">
+          <div className="mx-auto max-w-[1320px] print:max-w-none">
+            {activeTab === 'matrix' && (
+              <CrossMatchMatrix
+                loops={evaluatedLoops}
+                filteredLoops={filteredLoops}
+                summary={summary}
+                filters={filters}
+                onChangeFilters={setFilters}
+                onRerunParallelMatch={() => void executeParallelBatch(rawLoops)}
+                onInspectLoop={handleInspectLoop}
+                onCompareInPdf={handleCompareLoopInPdf}
+                onOpenAddLoop={() => setIsAddModalOpen(true)}
+                isBatchRunning={isBatchRunning}
+                analysisReport={analysisReport}
+                diffs={crossLayerDiffs}
+                ruleViolations={ruleViolations}
+                pinNotes={pinNotes}
+                onOpenCommentReport={() => setActiveTab('comments')}
+              />
+            )}
 
-        {activeTab === 'drawing-ocr' && (
-          <DrawingOcrAnalyzer
-            uploadedPdfs={uploadedPdfs.map((u) => ({
-              id: u.id,
-              name: u.name,
-              objectUrl: u.objectUrl,
-              hintRole: u.hintRole,
-            }))}
-            onUploadPdf={(item) => setUploadedPdfs((prev) => [...prev, item])}
-            analysisReport={analysisReport}
-            onAnalysisComplete={(report) => setAnalysisReport(report)}
-            ocrResults={ocrResults}
-            onOcrComplete={(res) => setOcrResults((prev) => [res, ...prev])}
-            onRegisterOcrEntitiesToRules={(ents) =>
-              setRegisteredOcrEntities((prev) => [...ents, ...prev])
-            }
-            onJumpToDrawingPage={handleJumpToDrawingPage}
-          />
-        )}
+            {activeTab === 'diff' && (
+              <DiffCheckWorkspace
+                diffs={crossLayerDiffs}
+                uploadedPdfs={uploadedPdfs.map((u) => ({
+                  id: u.id,
+                  name: u.name,
+                  objectUrl: u.objectUrl,
+                }))}
+                cachedEntities={allExtractedEntities}
+                onCacheExtractedEntities={(ents) =>
+                  setCachedEntities((prev) => [...prev, ...ents])
+                }
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+                onCompareSideBySide={handleCompareSideBySide}
+              />
+            )}
 
-        {activeTab === 'rules' && (
-          <RuleReviewWorkspace
-            rules={verificationRules}
-            onToggleRule={(ruleId) =>
-              setVerificationRules((prev) =>
-                prev.map((r) => (r.id === ruleId ? { ...r, enabled: !r.enabled } : r))
-              )
-            }
-            onChangeRuleSeverity={(ruleId, severity) =>
-              setVerificationRules((prev) =>
-                prev.map((r) => (r.id === ruleId ? { ...r, defaultSeverity: severity } : r))
-              )
-            }
-            onAddCustomRule={(rule) =>
-              setVerificationRules((prev) => [...prev, rule])
-            }
-            onDeleteCustomRule={(ruleId) =>
-              setVerificationRules((prev) => prev.filter((r) => r.id !== ruleId))
-            }
-            violations={ruleViolations}
-            extractedEntityCount={allExtractedEntities.length}
-            onOpenDeepAnalyzer={() => setActiveTab('drawing-ocr')}
-            onJumpToDrawingPage={handleJumpToDrawingPage}
-          />
-        )}
+            {activeTab === 'drawing-ocr' && (
+              <DrawingOcrAnalyzer
+                uploadedPdfs={uploadedPdfs.map((u) => ({
+                  id: u.id,
+                  name: u.name,
+                  objectUrl: u.objectUrl,
+                  hintRole: u.hintRole,
+                }))}
+                onUploadPdf={(item) => setUploadedPdfs((prev) => [...prev, item])}
+                analysisReport={analysisReport}
+                onAnalysisComplete={(report) => setAnalysisReport(report)}
+                ocrResults={ocrResults}
+                onOcrComplete={(res) => setOcrResults((prev) => [res, ...prev])}
+                onRegisterOcrEntitiesToRules={(ents) =>
+                  setRegisteredOcrEntities((prev) => [...ents, ...prev])
+                }
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+              />
+            )}
 
-        {activeTab === 'trace' && (
-          <LoopTraceInspector
-            loops={evaluatedLoops}
-            selectedLoopId={selectedLoopId}
-            onSelectLoop={setSelectedLoopId}
-            onOpenLayerInPdf={(loop, layer) => handleOpenLayerInPdf(loop, layer)}
-            onCompareLoopInPdf={handleCompareLoopInPdf}
-            onJumpToDiscrepancyPdf={handleJumpToDiscrepancyPdf}
-            onAskAiForLoop={handleAskAiForLoop}
-          />
-        )}
+            {activeTab === 'maker' && (
+              <MakerAnalysisWorkspace
+                evaluatedLoops={evaluatedLoops}
+                analysisReport={analysisReport}
+                onUploadMakerPdf={(item) => setUploadedPdfs((prev) => [...prev, item])}
+                onOpenDeepAnalyzer={() => setActiveTab('drawing-ocr')}
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+                onOpenSpecReview={() => setActiveTab('spec')}
+                onLearnMakerRule={(payload) =>
+                  setLearnedRules((prev) => [
+                    createLearnedRule({
+                      ...payload,
+                      category: 'MAKER_SCOPE',
+                      existingCount: prev.length,
+                    }),
+                    ...prev,
+                  ])
+                }
+              />
+            )}
 
-        {activeTab === 'pdf' && (
-          <SplitPdfViewer
-            leftFocus={leftFocus}
-            rightFocus={rightFocus}
-            evaluatedLoops={evaluatedLoops}
-            activeIssueLoopId={activePdfLoopId}
-            onSelectIssueLoop={handleCompareLoopInPdf}
-            onLocateAndAutoInsertOnPane={handleLocateAndAutoInsertOnPane}
-            onAutoInsertNote={handleAutoInsertNote}
-            uploadedPdfs={uploadedPdfs}
-            pinNotes={pinNotes}
-            pendingNotePrefill={pendingNotePrefill}
-            onClearPendingPrefill={() => setPendingNotePrefill(null)}
-            onAddPinNote={(note) => setPinNotes((prev) => [note, ...prev])}
-            onUpdatePinNote={(id, patch) =>
-              setPinNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)))
-            }
-            onDeletePinNote={(id) =>
-              setPinNotes((prev) => prev.filter((n) => n.id !== id))
-            }
-            onResetSeedNotes={() => setPinNotes(H042_SEED_PIN_NOTES)}
-            onUploadPdf={(item) => setUploadedPdfs((prev) => [...prev, item])}
-            onRemoveUploadedPdf={(id) =>
-              setUploadedPdfs((prev) => prev.filter((item) => item.id !== id))
-            }
-            onRunAiWithCustomPdfs={(atts) => void handleRunParallelAi(undefined, atts)}
-          />
-        )}
+            {activeTab === 'spec' && (
+              <SpecReviewWorkspace
+                specReport={specReport}
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+                onLearnFromSpecCheck={(check) =>
+                  setLearnedRules((prev) => [
+                    createLearnedRuleFromSpecCheck(check, prev.length),
+                    ...prev,
+                  ])
+                }
+                onProceedToPos={handleOpenPosForSpec}
+              />
+            )}
 
-        {activeTab === 'ai' && (
-          <ParallelAiVerifier
-            result={aiResult}
-            isRunning={isAiRunning}
-            error={aiError}
-            customAttachments={customAttachments}
-            initialFocusQuery={aiFocusQuery}
-            selectedModel={selectedAiModel}
-            onChangeModel={setSelectedAiModel}
-            onRunParallelAudit={(q) => void handleRunParallelAi(q)}
-            onRunFocusedQuery={(q, ids) => void handleRunFocusedQuery(q, ids)}
-            onJumpToLocalFinding={handleJumpToLocalFinding}
-            onJumpToAiFinding={handleJumpToAiFinding}
-          />
-        )}
-      </main>
+            {activeTab === 'knowledge' && (
+              <LearnedKnowledgeWorkspace
+                learnedRules={learnedRules}
+                onToggleRule={(id) =>
+                  setLearnedRules((prev) =>
+                    prev.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
+                  )
+                }
+                onAddRule={(payload) =>
+                  setLearnedRules((prev) => [
+                    createLearnedRule({ ...payload, existingCount: prev.length }),
+                    ...prev,
+                  ])
+                }
+                onDeleteRule={(id) =>
+                  setLearnedRules((prev) => prev.filter((r) => r.id !== id))
+                }
+                onAutoLearnFromSession={() => {
+                  const updated = learnRulesFromAnalysis({
+                    existingRules: learnedRules,
+                    analysisReport,
+                    ruleViolations,
+                  });
+                  const addedCount = Math.max(0, updated.length - learnedRules.length);
+                  if (addedCount > 0) {
+                    setLearnedRules(updated);
+                  }
+                  return addedCount;
+                }}
+                onResetSeedRules={() => setLearnedRules(SEED_LEARNED_RULES)}
+                onProceedToPos={() => setActiveTab('pos')}
+              />
+            )}
+
+            {activeTab === 'pos' && (
+              <PosGeneratorWorkspace
+                evaluatedLoops={evaluatedLoops}
+                specReport={specReport}
+                learnedRules={learnedRules}
+                analysisReport={analysisReport}
+                selectedPackageId={selectedPosPackageId}
+                onSelectPackageId={setSelectedPosPackageId}
+                onOpenSpecReview={() => setActiveTab('spec')}
+                onOpenCommentReport={() => setActiveTab('comments')}
+              />
+            )}
+
+            {activeTab === 'rules' && (
+              <RuleReviewWorkspace
+                rules={effectiveVerificationRules}
+                onToggleRule={(ruleId) =>
+                  setVerificationRules((prev) =>
+                    prev.map((r) => (r.id === ruleId ? { ...r, enabled: !r.enabled } : r))
+                  )
+                }
+                onChangeRuleSeverity={(ruleId, severity) =>
+                  setVerificationRules((prev) =>
+                    prev.map((r) => (r.id === ruleId ? { ...r, defaultSeverity: severity } : r))
+                  )
+                }
+                onAddCustomRule={(rule) =>
+                  setVerificationRules((prev) => [...prev, rule])
+                }
+                onDeleteCustomRule={(ruleId) =>
+                  setVerificationRules((prev) => prev.filter((r) => r.id !== ruleId))
+                }
+                violations={ruleViolations}
+                extractedEntityCount={allExtractedEntities.length}
+                onOpenDeepAnalyzer={() => setActiveTab('drawing-ocr')}
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+              />
+            )}
+
+            {activeTab === 'comments' && (
+              <ElectricalCommentReportWorkspace
+                evaluatedLoops={evaluatedLoops}
+                crossLayerDiffs={crossLayerDiffs}
+                ruleViolations={ruleViolations}
+                pinNotes={pinNotes}
+                analysisReport={analysisReport}
+                onJumpToDrawingPage={handleJumpToDrawingPage}
+              />
+            )}
+
+            {activeTab === 'trace' && (
+              <LoopTraceInspector
+                loops={evaluatedLoops}
+                selectedLoopId={selectedLoopId}
+                onSelectLoop={setSelectedLoopId}
+                onOpenLayerInPdf={(loop, layer) => handleOpenLayerInPdf(loop, layer)}
+                onCompareLoopInPdf={handleCompareLoopInPdf}
+                onJumpToDiscrepancyPdf={handleJumpToDiscrepancyPdf}
+                onAskAiForLoop={handleAskAiForLoop}
+              />
+            )}
+
+            {activeTab === 'pdf' && (
+              <SplitPdfViewer
+                leftFocus={leftFocus}
+                rightFocus={rightFocus}
+                evaluatedLoops={evaluatedLoops}
+                activeIssueLoopId={activePdfLoopId}
+                onSelectIssueLoop={handleCompareLoopInPdf}
+                onLocateAndAutoInsertOnPane={handleLocateAndAutoInsertOnPane}
+                onAutoInsertNote={handleAutoInsertNote}
+                uploadedPdfs={uploadedPdfs}
+                pinNotes={pinNotes}
+                pendingNotePrefill={pendingNotePrefill}
+                onClearPendingPrefill={() => setPendingNotePrefill(null)}
+                onAddPinNote={(note) => setPinNotes((prev) => [note, ...prev])}
+                onUpdatePinNote={(id, patch) =>
+                  setPinNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)))
+                }
+                onDeletePinNote={(id) =>
+                  setPinNotes((prev) => prev.filter((n) => n.id !== id))
+                }
+                onResetSeedNotes={() => setPinNotes(H042_SEED_PIN_NOTES)}
+                onUploadPdf={(item) => setUploadedPdfs((prev) => [...prev, item])}
+                onRemoveUploadedPdf={(id) =>
+                  setUploadedPdfs((prev) => prev.filter((item) => item.id !== id))
+                }
+                onRunAiWithCustomPdfs={(atts) => void handleRunParallelAi(undefined, atts)}
+              />
+            )}
+
+            {activeTab === 'ai' && (
+              <ParallelAiVerifier
+                result={aiResult}
+                isRunning={isAiRunning}
+                error={aiError}
+                customAttachments={customAttachments}
+                initialFocusQuery={aiFocusQuery}
+                selectedModel={selectedAiModel}
+                onChangeModel={setSelectedAiModel}
+                onRunParallelAudit={(q) => void handleRunParallelAi(q)}
+                onRunFocusedQuery={(q, ids) => void handleRunFocusedQuery(q, ids)}
+                onJumpToLocalFinding={handleJumpToLocalFinding}
+                onJumpToAiFinding={handleJumpToAiFinding}
+              />
+            )}
+          </div>
+        </main>
+      </div>
 
       <AddLoopModal
         isOpen={isAddModalOpen}

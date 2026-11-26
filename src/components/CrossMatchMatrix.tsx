@@ -16,6 +16,7 @@ import {
   Layers,
   Cpu,
   Gauge,
+  ClipboardCheck,
 } from 'lucide-react';
 import {
   CrossLayerDiffItem,
@@ -47,6 +48,7 @@ interface CrossMatchMatrixProps {
   diffs?: CrossLayerDiffItem[];
   ruleViolations?: RuleViolationHit[];
   pinNotes?: DrawingPinNote[];
+  onOpenCommentReport?: () => void;
 }
 
 const STATUS_STYLE_MAP: Record<MatchStatus, { text: string; border: string; bg: string }> = {
@@ -73,6 +75,7 @@ export const CrossMatchMatrix: React.FC<CrossMatchMatrixProps> = ({
   diffs = [],
   ruleViolations = [],
   pinNotes = [],
+  onOpenCommentReport,
 }) => {
   const [isHtmlExportOpen, setIsHtmlExportOpen] = useState(false);
   const topDiscrepancyLoop = useMemo(
@@ -256,6 +259,16 @@ export const CrossMatchMatrix: React.FC<CrossMatchMatrixProps> = ({
             <FileCode2 className="h-3.5 w-3.5" />
             <span>HTML 보고서 내보내기</span>
           </button>
+          {onOpenCommentReport && (
+            <button
+              type="button"
+              onClick={onOpenCommentReport}
+              className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded border border-[#103258] bg-[#103258] px-2.5 text-xs font-semibold text-white hover:bg-[#0b2542]"
+            >
+              <ClipboardCheck className="h-3.5 w-3.5" />
+              <span>전기 코멘트·첨부양식</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -303,6 +316,7 @@ export const CrossMatchMatrix: React.FC<CrossMatchMatrixProps> = ({
               <option value="ALL">전체 유닛 (All Units)</option>
               <option value="100">100 · Regastainer</option>
               <option value="200">200 · HP Pump Skid</option>
+              <option value="300">300 · Recondenser</option>
               <option value="400">400 · Utility Interface</option>
             </select>
 

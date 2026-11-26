@@ -8,6 +8,7 @@ import {
 import { evaluateLoopEntry, normalizeTag } from './diagramMatcher.ts';
 
 export function resolvePidPage(unitCode: string, sheet: string): number {
+  if (unitCode === '300') return 1;
   const m = sheet.match(/^(\d+)\//);
   if (!m) return 1;
   const sheetNo = Number(m[1]);
@@ -56,7 +57,12 @@ export function resolveLoopPdfTargets(entry: DiagramLoopEntry): LoopPdfTargetPai
       entry.gar.markupCode === 'D' ||
       Boolean(entry.gar.equipmentLabelOnGar));
 
-  const pidDrawingId = entry.unitCode === '100' ? 'PR-100-PID-0001' : 'PR-200-PID-0001';
+  const pidDrawingId =
+    entry.unitCode === '100'
+      ? 'PR-100-PID-0001'
+      : entry.unitCode === '300'
+        ? 'PR-300-PID-0001'
+        : 'PR-200-PID-0001';
   const garDrawingId = entry.unitCode === '100' ? 'PD-100-GAR-0001' : 'PD-200-GAR-0001';
 
   const left = useGarLeft && entry.gar
@@ -132,7 +138,11 @@ export function buildCrossLayerDiffs(entries: DiagramLoopEntry[]): CrossLayerDif
   for (const entry of entries) {
     const evaluated = evaluateLoopEntry(entry);
     const pidDrawingId =
-      entry.unitCode === '100' ? 'PR-100-PID-0001' : 'PR-200-PID-0001';
+      entry.unitCode === '100'
+        ? 'PR-100-PID-0001'
+        : entry.unitCode === '300'
+          ? 'PR-300-PID-0001'
+          : 'PR-200-PID-0001';
     const garDrawingId =
       entry.unitCode === '100' ? 'PD-100-GAR-0001' : 'PD-200-GAR-0001';
     const pidPage = resolvePidPage(entry.unitCode, entry.pid.sheet);

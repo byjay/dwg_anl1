@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CheckSquare, Download, FileCode2, Files, Square, X } from 'lucide-react';
+import { CheckSquare, Download, FileCode2, Files, Image as ImageIcon, Loader2, Square, X } from 'lucide-react';
 import {
   CrossLayerDiffItem,
   DrawingContentAnalysisReport,
@@ -16,6 +16,9 @@ import {
   HTML_REPORT_SECTIONS,
   HtmlReportSectionId,
 } from '../utils/htmlReportExporter';
+import { buildElectricalCommentPackage, EvidencePanelSpec } from '../utils/electricalCommentEngine';
+import { renderAllEvidenceSnapshots } from '../utils/pdfSnapshotRenderer';
+import { buildTemplateStyleHtmlReport } from '../utils/templateReportHtmlExporter';
 
 interface HtmlReportExportModalProps {
   isOpen: boolean;
@@ -52,6 +55,7 @@ export const HtmlReportExportModal: React.FC<HtmlReportExportModalProps> = ({
     HTML_REPORT_SECTIONS.map((s) => s.id)
   );
   const [lastExportMessage, setLastExportMessage] = useState<string | null>(null);
+  const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
 
   const severitySummary = useMemo(
     () => buildDiscrepancySeveritySummary(loops),
@@ -126,6 +130,38 @@ export const HtmlReportExportModal: React.FC<HtmlReportExportModalProps> = ({
     if (!single) return;
     triggerHtmlDownload(single.filename, single.html);
     setLastExportMessage(`개별 항목 보고서(${single.filename})를 다운로드했습니다.`);
+  };
+
+  const handleDownloadTemplateHtml = async () => {
+    setIsGeneratingTemplate(true);
+    try {
+      const pkg = buildElectricalCommentPackage({
+        evaluatedLoops: loops,
+        crossLayerDiffs: diffs,
+        ruleViolations,
+        pinNotes,
+        analysisReport,
+      });
+      const panels: EvidencePanelSpec[] = [];
+      const seen = new Set<string>();
+      for (const sheet of pkg.commentSheets) {
+        for (const p of sheet.evidencePanels) {
+          if (seen.has(p.id)) continue;
+          seen.add(p.id);
+          panels.push(p);
+        }
+      }
+      const snapshots = await renderAllEvidenceSnapshots(panels);
+      const html = buildTemplateStyleHtmlReport(pkg, snapshots);
+      const nowStamp = new Date().toISOString().slice(0, 10);
+      const filename = `H042_Electrical_Comment_Report_${nowStamp}.html`;
+      triggerHtmlDownload(filename, html);
+      setLastExportMessage(
+        `첨부양식 HTML 보고서(슬라이드 ${pkg.commentSheets.length}장 · 근거 그림 ${Object.keys(snapshots).length}개 포함)를 ${filename} 파일로 생성했습니다.`
+      );
+    } finally {
+      setIsGeneratingTemplate(false);
+    }
   };
 
   return (
@@ -243,6 +279,23 @@ export const HtmlReportExportModal: React.FC<HtmlReportExportModalProps> = ({
           </button>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={isGeneratingTemplate}
+              onClick={() => void handleDownloadTemplateHtml()}
+              className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded border border-[#103258] bg-[#103258] px-3 text-xs font-semibold text-white hover:bg-[#0b2542] disabled:opacity-50"
+            >
+              {isGeneratingTemplate ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ImageIcon className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {isGeneratingTemplate
+                  ? '도면 그림 캡처 중...'
+                  : '첨부양식(그림·근거포함) 자동생성'}
+              </span>
+            </button>
             <button
               type="button"
               disabled={selectedSections.length === 0}

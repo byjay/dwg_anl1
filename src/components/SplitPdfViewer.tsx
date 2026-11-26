@@ -138,6 +138,9 @@ const SHEET_QUICK_JUMPS: Record<string, Array<{ label: string; page: number }>> 
     { label: '13/15 (TI 131B 오기)', page: 16 },
     { label: '15/15 (FCV/PDIT-111E)', page: 18 },
   ],
+  'PR-300-PID-0001': [
+    { label: '10/10 (300-V-001 마크업)', page: 1 },
+  ],
   'PD-100-GAR-0001': [
     { label: '03/07 (SDV Mark B)', page: 5 },
     { label: '06/07 (E-201A 오기)', page: 8 },
@@ -1000,6 +1003,19 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
         subtitle: `사용자 업로드 (${custom.role === 'PIPING' ? '배관 도면' : '전장 도면'}) · ${custom.sizeLabel}`,
         url: custom.objectUrl,
         highlights: ['사용자가 직접 업로드한 PDF 도면입니다.'],
+        quickJumps: undefined,
+      };
+    }
+    if (id === 'REQ-REV1-261118') {
+      return {
+        id: 'REQ-REV1-261118',
+        title: 'H042 전기 생산 설계관련 요청건 (Rev1_261118)',
+        subtitle: '첨부 보고서 양식 원본 PDF · 18p · EL/CI/GAR 요청사항 정리',
+        url: '/assets/aistudio/H042________________Rev1_261118_38b7d0ac.pdf',
+        highlights: [
+          'p.1~4: RL0113 중복, PB 오기, EL-100-GAR 누락, 200-EDJB-001 80P/40P, 6.6kV Spec',
+          'p.6~18: iCAMS E-01/E-02/R-06/H-01, PSDS R-01/R-09/H-05~09/R76, 6600V 출도 및 재요청',
+        ],
         quickJumps: undefined,
       };
     }
@@ -2021,6 +2037,11 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
                       {d.drawingNo} · {d.titleKo}
                     </option>
                   ))}
+                </optgroup>
+                <optgroup label="첨부 요청서 · 기준 양식">
+                  <option value="REQ-REV1-261118">
+                    H042 전기 생산 설계관련 요청건 (첨부 보고서 양식 · 18p)
+                  </option>
                 </optgroup>
                 {uploadedPdfs.length > 0 && (
                   <optgroup label="업로드된 도면">

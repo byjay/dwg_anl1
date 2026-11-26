@@ -17,7 +17,7 @@ describe('D3 Sunburst & Network Graph Data Builder', () => {
     assert.equal(tree.matchedCount, summary.matchedCount);
     assert.equal(tree.issueCount, summary.totalLoops - summary.matchedCount);
     assert.equal(tree.matchRatePercent, summary.matchRatePercent);
-    assert.equal(tree.children?.length, 3); // Units 100, 200, 400
+    assert.equal(tree.children?.length, 4); // Units 100, 200, 300, 400
 
     const leafSum = (tree.children || []).reduce(
       (acc, mod) =>
