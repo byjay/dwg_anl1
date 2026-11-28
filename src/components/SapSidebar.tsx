@@ -57,6 +57,8 @@ export const SapSidebar: React.FC<SapSidebarProps> = ({
         return `${counts.commentSheetCount}장`;
       case 'pdf':
         return `${counts.openNoteCount}`;
+      case 'checklist':
+        return '99';
       default:
         return null;
     }

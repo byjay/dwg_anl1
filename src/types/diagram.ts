@@ -154,6 +154,8 @@ export interface ParallelAuditTrackResult {
     finding: string;
     sourceEvidence: string;
     recommendation: string;
+    textRegions?: string[];
+    pageHint?: number;
   }>;
   error?: string;
 }

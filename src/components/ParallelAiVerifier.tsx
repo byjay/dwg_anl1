@@ -27,6 +27,8 @@ export type FreeGeminiModel = 'gemini-3.1-flash-lite' | 'gemini-4-hydrogen';
 
 interface ParallelAiVerifierProps {
   result: ParallelAnalyzeResponse | null;
+  localAuditResult?: LocalPdfAuditResponse | null;
+  onLocalAuditComplete?: (res: LocalPdfAuditResponse) => void;
   isRunning: boolean;
   error: string | null;
   customAttachments: CustomPdfAttachment[];
@@ -50,6 +52,8 @@ interface ParallelAiVerifierProps {
 
 export const ParallelAiVerifier: React.FC<ParallelAiVerifierProps> = ({
   result,
+  localAuditResult: controlledLocalResult,
+  onLocalAuditComplete,
   isRunning,
   error,
   customAttachments,
@@ -69,7 +73,8 @@ export const ParallelAiVerifier: React.FC<ParallelAiVerifierProps> = ({
   const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
 
   // 100% API-key-free browser-side vector audit state
-  const [localAuditResult, setLocalAuditResult] = useState<LocalPdfAuditResponse | null>(null);
+  const [internalLocalResult, setInternalLocalResult] = useState<LocalPdfAuditResponse | null>(null);
+  const localAuditResult = controlledLocalResult !== undefined ? controlledLocalResult : internalLocalResult;
   const [isLocalScanning, setIsLocalScanning] = useState(false);
   const [localScanError, setLocalScanError] = useState<string | null>(null);
 
@@ -94,7 +99,8 @@ export const ParallelAiVerifier: React.FC<ParallelAiVerifierProps> = ({
     setLocalScanError(null);
     try {
       const scanRes = await runLocalPdfVectorAudit();
-      setLocalAuditResult(scanRes);
+      setInternalLocalResult(scanRes);
+      onLocalAuditComplete?.(scanRes);
     } catch (err) {
       setLocalScanError(err instanceof Error ? err.message : String(err));
     } finally {

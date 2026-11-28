@@ -15,6 +15,7 @@ import {
   FileSpreadsheet,
   PanelLeft,
   ArrowRight,
+  ListChecks,
 } from 'lucide-react';
 
 export type WorkbenchTab =
@@ -29,7 +30,8 @@ export type WorkbenchTab =
   | 'comments'
   | 'trace'
   | 'pdf'
-  | 'ai';
+  | 'ai'
+  | 'checklist';
 
 export interface SapTCodeMeta {
   id: WorkbenchTab;
@@ -142,6 +144,14 @@ export const SAP_TCODE_META: SapTCodeMeta[] = [
     group: 'PROCUREMENT',
     groupLabelKo: '03. POS 발주 · 코멘트 · 증빙',
     icon: Cpu,
+  },
+  {
+    id: 'checklist',
+    tCode: 'ZCL99',
+    label: '1~99 체크리스트·가이드',
+    group: 'PROCUREMENT',
+    groupLabelKo: '03. POS 발주 · 코멘트 · 증빙',
+    icon: ListChecks,
   },
 ];
 

@@ -2,12 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSearchTermsForLoop,
+  extractAiRegionCandidates,
+  matchMultipleTextRegions,
   matchTextBoxesForTerms,
   PdfTextBox,
   upsertAutoNote,
 } from './pdfLocator.ts';
 import { H042_LOOP_SEED_DATA } from '../data/h042Dataset.ts';
-import { DrawingPinNote } from '../types/diagram.ts';
+import { DrawingPinNote, ParallelAnalyzeResponse } from '../types/diagram.ts';
 
 describe('PDF Vector Text Coordinate Locator & Auto-Note Upsert', () => {
   it('matches exact and split CAD tag boxes on a PDF page', () => {
@@ -75,5 +77,56 @@ describe('PDF Vector Text Coordinate Locator & Auto-Note Upsert', () => {
 
     assert.equal(second.wasCreated, false);
     assert.equal(second.notes.length, 1);
+  });
+
+  it('extracts AI textRegions and matches non-overlapping overlays on PDF text boxes', () => {
+    const aiResult: ParallelAnalyzeResponse = {
+      model: 'gemini-3.1-flash-lite',
+      thinkingLevel: 'HIGH',
+      totalDurationMs: 1200,
+      tracks: [
+        {
+          trackId: 'track-2',
+          trackName: 'HP Pump Track',
+          moduleCode: '200',
+          drawingIds: ['CI-000-DIA-0002'],
+          status: 'COMPLETED',
+          durationMs: 1200,
+          findings: [
+            {
+              tag: '200-SDV-101',
+              severity: 'CRITICAL',
+              category: 'UNIT_CODE_MISMATCH',
+              finding: '100-ZSO/ZSC-101 및 100-NISJB-001 유닛 코드 오기',
+              sourceEvidence: 'CI-000-DIA-0002 H-06',
+              recommendation: '200-ZSO/ZSC-101로 정정',
+              textRegions: ['100-ZSO/ZSC-101', '100-NISJB-001'],
+              pageHint: 25,
+            },
+          ],
+        },
+      ],
+    };
+
+    const candidates = extractAiRegionCandidates({
+      drawingId: 'CI-000-DIA-0002',
+      pageNum: 25,
+      aiResult,
+    });
+
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].source, 'GEMINI_AI');
+    assert.deepEqual(candidates[0].searchTerms, ['100-ZSO/ZSC-101', '100-NISJB-001', '200-SDV-101']);
+
+    const boxes: PdfTextBox[] = [
+      { str: '100-ZSO/ZSC-101', xPct: 22.5, yPct: 41.2, leftPct: 18, topPct: 40, widthPct: 9, heightPct: 2.2 },
+      { str: '100-NISJB-001', xPct: 68.0, yPct: 44.0, leftPct: 63, topPct: 43, widthPct: 10, heightPct: 2.0 },
+      { str: '100-NISJB-001', xPct: 68.1, yPct: 44.1, leftPct: 63, topPct: 43, widthPct: 10, heightPct: 2.0 },
+    ];
+
+    const overlays = matchMultipleTextRegions(boxes, candidates);
+    assert.equal(overlays.length, 2);
+    assert.equal(overlays[0].matchedTerm, '100-ZSO/ZSC-101');
+    assert.equal(overlays[1].matchedTerm, '100-NISJB-001');
   });
 });

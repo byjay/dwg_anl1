@@ -32,7 +32,7 @@ import {
   resolvePidPage,
 } from './utils/diffEngine';
 import { buildSearchTermsForLoop, upsertAutoNote } from './utils/pdfLocator';
-import { LocalPdfFinding } from './utils/localPdfAudit';
+import { LocalPdfAuditResponse, LocalPdfFinding } from './utils/localPdfAudit';
 import {
   DEFAULT_VERIFICATION_RULES,
   evaluateVerificationRules,
@@ -59,6 +59,7 @@ import { LearnedKnowledgeWorkspace } from './components/LearnedKnowledgeWorkspac
 import { PosGeneratorWorkspace } from './components/PosGeneratorWorkspace';
 import { RuleReviewWorkspace } from './components/RuleReviewWorkspace';
 import { ElectricalCommentReportWorkspace } from './components/ElectricalCommentReportWorkspace';
+import { ChecklistReportWorkspace } from './components/ChecklistReportWorkspace';
 import { LoopTraceInspector } from './components/LoopTraceInspector';
 import {
   PdfFocusTarget,
@@ -135,6 +136,7 @@ export default function App() {
   const [selectedAiModel, setSelectedAiModel] =
     useState<FreeGeminiModel>('gemini-3.1-flash-lite');
   const [aiResult, setAiResult] = useState<ParallelAnalyzeResponse | null>(null);
+  const [localAuditResult, setLocalAuditResult] = useState<LocalPdfAuditResponse | null>(null);
   const [isAiRunning, setIsAiRunning] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiFocusQuery, setAiFocusQuery] = useState('');
@@ -967,12 +969,17 @@ export default function App() {
                   setUploadedPdfs((prev) => prev.filter((item) => item.id !== id))
                 }
                 onRunAiWithCustomPdfs={(atts) => void handleRunParallelAi(undefined, atts)}
+                aiResult={aiResult}
+                localAuditResult={localAuditResult}
+                ruleViolations={ruleViolations}
               />
             )}
 
             {activeTab === 'ai' && (
               <ParallelAiVerifier
                 result={aiResult}
+                localAuditResult={localAuditResult}
+                onLocalAuditComplete={setLocalAuditResult}
                 isRunning={isAiRunning}
                 error={aiError}
                 customAttachments={customAttachments}
@@ -983,6 +990,20 @@ export default function App() {
                 onRunFocusedQuery={(q, ids) => void handleRunFocusedQuery(q, ids)}
                 onJumpToLocalFinding={handleJumpToLocalFinding}
                 onJumpToAiFinding={handleJumpToAiFinding}
+              />
+            )}
+
+            {activeTab === 'checklist' && (
+              <ChecklistReportWorkspace
+                evaluatedLoops={evaluatedLoops}
+                crossLayerDiffs={crossLayerDiffs}
+                learnedRules={learnedRules}
+                ruleViolations={ruleViolations}
+                pinNotes={pinNotes}
+                specReport={specReport}
+                analysisReport={analysisReport}
+                aiResult={aiResult}
+                onSelectTab={setActiveTab}
               />
             )}
           </div>

@@ -31,6 +31,7 @@ import {
   Navigation,
   Pause,
   Play,
+  Sparkles,
 } from 'lucide-react';
 import { H042_DRAWINGS } from '../data/h042Dataset';
 import {
@@ -39,6 +40,8 @@ import {
   DrawingPinNote,
   EvaluatedLoopMatch,
   NoteStatus,
+  ParallelAnalyzeResponse,
+  RuleViolationHit,
   UnitCode,
 } from '../types/diagram';
 import {
@@ -47,10 +50,14 @@ import {
   resolveLoopPdfTargets,
 } from '../utils/diffEngine';
 import {
+  AiTextRegionOverlay,
   buildSearchTermsForLoop,
+  extractAiRegionCandidates,
+  locateAiTextRegionsOnPdfPage,
   locateTermsOnPdfPage,
   PdfLocateMatch,
 } from '../utils/pdfLocator';
+import type { LocalPdfAuditResponse } from '../utils/localPdfAudit';
 import {
   advanceSimulatedPeers,
   applySharedSessionEvent,
@@ -125,6 +132,9 @@ interface SplitPdfViewerProps {
   onUploadPdf: (item: UploadedPreviewItem) => void;
   onRemoveUploadedPdf: (id: string) => void;
   onRunAiWithCustomPdfs: (attachments: CustomPdfAttachment[]) => void;
+  aiResult?: ParallelAnalyzeResponse | null;
+  localAuditResult?: LocalPdfAuditResponse | null;
+  ruleViolations?: RuleViolationHit[];
 }
 
 const SHEET_QUICK_JUMPS: Record<string, Array<{ label: string; page: number }>> = {
@@ -197,6 +207,12 @@ interface PdfCanvasPaneProps {
     xPct: number;
     yPct: number;
   }) => void;
+  aiResult?: ParallelAnalyzeResponse | null;
+  localAuditResult?: LocalPdfAuditResponse | null;
+  ruleViolations?: RuleViolationHit[];
+  evaluatedLoops?: EvaluatedLoopMatch[];
+  showAiOverlays: boolean;
+  onToggleAiOverlays: () => void;
 }
 
 const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
@@ -222,6 +238,12 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
   onLocalPointerMove,
   onLocalPointerLeave,
   onLocalPointerPing,
+  aiResult,
+  localAuditResult,
+  ruleViolations,
+  evaluatedLoops,
+  showAiOverlays,
+  onToggleAiOverlays,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -241,6 +263,8 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
   const [renderError, setRenderError] = useState<string | null>(null);
   const [locatedMatch, setLocatedMatch] = useState<PdfLocateMatch | null>(null);
   const [autoStatusMsg, setAutoStatusMsg] = useState<string | null>(null);
+  const [aiOverlays, setAiOverlays] = useState<AiTextRegionOverlay[]>([]);
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
 
   // Pin note placement state
   const [notePlacementArmed, setNotePlacementArmed] = useState(false);
@@ -439,6 +463,63 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
     };
   }, [pdfDoc, pageNum, zoom, drawingId, externalPageRequest]);
 
+  // Compute AI / Rule / Discrepancy text-region candidates for active drawing & page
+  const aiRegionCandidates = useMemo(
+    () =>
+      extractAiRegionCandidates({
+        drawingId,
+        pageNum,
+        aiResult,
+        localAuditResult,
+        ruleViolations,
+        evaluatedLoops,
+      }),
+    [drawingId, pageNum, aiResult, localAuditResult, ruleViolations, evaluatedLoops]
+  );
+
+  // Match text-region candidates to exact PDF vector text bounding boxes for semi-transparent overlays
+  useEffect(() => {
+    if (!pdfDoc || !showAiOverlays || aiRegionCandidates.length === 0) {
+      setAiOverlays([]);
+      setSelectedOverlayId(null);
+      return;
+    }
+    let cancelled = false;
+    const safePage = Math.max(1, Math.min(pageNum, pdfDoc.numPages));
+    pdfDoc
+      .getPage(safePage)
+      .then((page) => locateAiTextRegionsOnPdfPage(page, aiRegionCandidates))
+      .then((overlays) => {
+        if (cancelled) return;
+        setAiOverlays(overlays);
+        setSelectedOverlayId((prev) =>
+          overlays.some((o) => o.id === prev) ? prev : null
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setAiOverlays([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDoc, pageNum, drawingId, showAiOverlays, aiRegionCandidates]);
+
+  const scrollToOverlay = (overlay: AiTextRegionOverlay) => {
+    setSelectedOverlayId(overlay.id);
+    if (!containerRef.current || !canvasRef.current) return;
+    const cw = parseFloat(canvasRef.current.style.width || '0') || canvasRef.current.clientWidth;
+    const ch = parseFloat(canvasRef.current.style.height || '0') || canvasRef.current.clientHeight;
+    const scrollX = Math.max(0, (cw * overlay.xPct) / 100 - containerRef.current.clientWidth / 2);
+    const scrollY = Math.max(0, (ch * overlay.yPct) / 100 - containerRef.current.clientHeight / 2);
+    containerRef.current.scrollTo({ left: scrollX, top: scrollY, behavior: 'smooth' });
+  };
+
+  const selectedOverlay = useMemo(
+    () => aiOverlays.find((o) => o.id === selectedOverlayId) || null,
+    [aiOverlays, selectedOverlayId]
+  );
+
   const pageNotes = useMemo(
     () => notesForDrawing.filter((n) => n.pageNum === pageNum),
     [notesForDrawing, pageNum]
@@ -572,6 +653,21 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
             <MapPinPlus className="h-3 w-3" />
             <span>{notePlacementArmed ? '도면 클릭하여 위치 지정' : '도면 노트 추가'}</span>
           </button>
+
+          <button
+            type="button"
+            onClick={onToggleAiOverlays}
+            aria-pressed={showAiOverlays}
+            data-testid={`toggle-ai-overlay-${paneSide.toLowerCase()}`}
+            className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-[11px] font-medium transition-colors ${
+              showAiOverlays
+                ? 'border-violet-600 bg-violet-50 text-violet-900'
+                : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <Sparkles className="h-3 w-3" />
+            <span>AI 영역 ({showAiOverlays ? aiOverlays.length : 0})</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -636,6 +732,34 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
         </div>
       )}
 
+      {/* AI Semi-Transparent Text Region Chips Strip */}
+      {showAiOverlays && aiOverlays.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-violet-100 bg-violet-50/40 px-3 py-1.5 text-[11px]">
+          <span className="font-semibold text-violet-900">AI 영역 하이라이트:</span>
+          {aiOverlays.slice(0, 8).map((ov) => {
+            const isSel = ov.id === selectedOverlayId;
+            return (
+              <button
+                key={ov.id}
+                type="button"
+                onClick={() => scrollToOverlay(ov)}
+                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
+                  isSel
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : ov.severity === 'CRITICAL'
+                      ? 'border-red-300 bg-red-50/80 text-red-900 hover:bg-red-100'
+                      : ov.severity === 'WARNING'
+                        ? 'border-amber-300 bg-amber-50/80 text-amber-900 hover:bg-amber-100'
+                        : 'border-violet-300 bg-white text-violet-900 hover:bg-violet-50'
+                }`}
+              >
+                <span>{ov.str}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* High-DPI Canvas Viewport + Interactive Pin Overlay */}
       <div
         ref={containerRef}
@@ -664,6 +788,58 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
                 notePlacementArmed ? 'cursor-crosshair ring-2 ring-sky-500/40' : ''
               }`}
             />
+
+            {/* Semi-Transparent AI Text-Region Canvas Overlays */}
+            {showAiOverlays &&
+              aiOverlays.map((ov, idx) => {
+                const isSel = ov.id === selectedOverlayId;
+                const overlayPalette =
+                  ov.source === 'GEMINI_AI'
+                    ? 'border-violet-600/80 bg-violet-500/25 hover:bg-violet-500/35'
+                    : ov.severity === 'CRITICAL'
+                      ? 'border-red-600/80 bg-red-500/25 hover:bg-red-500/35'
+                      : ov.severity === 'WARNING'
+                        ? 'border-amber-600/80 bg-amber-400/30 hover:bg-amber-400/40'
+                        : 'border-sky-600/80 bg-sky-500/20 hover:bg-sky-500/30';
+                const sourceTag =
+                  ov.source === 'GEMINI_AI'
+                    ? 'AI'
+                    : ov.source === 'LOCAL_SCAN'
+                      ? 'SCAN'
+                      : ov.source === 'RULE_ENGINE'
+                        ? 'RULE'
+                        : 'DIFF';
+                return (
+                  <button
+                    key={ov.id}
+                    type="button"
+                    data-testid={`ai-text-overlay-${paneSide.toLowerCase()}-${idx}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      scrollToOverlay(ov);
+                    }}
+                    title={`${ov.tag}: ${ov.summary}`}
+                    aria-label={`AI 검출 영역 ${ov.str} (${ov.tag})`}
+                    style={{
+                      left: `${ov.leftPct}%`,
+                      top: `${ov.topPct}%`,
+                      width: `${Math.max(3.6, ov.widthPct)}%`,
+                      height: `${Math.max(2.2, ov.heightPct)}%`,
+                    }}
+                    className={`group absolute z-12 rounded-sm border transition-all ${overlayPalette} ${
+                      isSel ? 'z-15 ring-2 ring-slate-900' : ''
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none absolute -top-4 left-0 whitespace-nowrap rounded px-1 py-0.2 font-mono text-[9px] font-semibold text-white shadow-sm transition-opacity ${
+                        isSel ? 'opacity-100 bg-slate-900' : 'opacity-0 group-hover:opacity-100 bg-slate-800/90'
+                      }`}
+                    >
+                      [{sourceTag}] {ov.str}
+                    </span>
+                  </button>
+                );
+              })}
 
             {/* Auto-Locate Vector Text Reticle Highlight */}
             {locatedMatch && (
@@ -776,6 +952,60 @@ const PdfCanvasPane: React.FC<PdfCanvasPaneProps> = ({
           </div>
         )}
       </div>
+
+      {/* Selected AI Text-Region Overlay Inspector */}
+      {selectedOverlay && showAiOverlays && (
+        <div
+          data-testid={`ai-overlay-inspector-${paneSide.toLowerCase()}`}
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-violet-200 bg-violet-50/70 px-3 py-2 text-xs"
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-700" />
+              <span className="font-mono font-semibold text-violet-950">{selectedOverlay.str}</span>
+              <span className="font-mono text-[10px] text-slate-600">
+                ({selectedOverlay.tag} · {selectedOverlay.source} · X:{selectedOverlay.xPct}% Y:{selectedOverlay.yPct}%)
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-800">{selectedOverlay.summary}</div>
+            <div className="text-[11px] font-medium text-emerald-800">
+              권고: {selectedOverlay.recommendation}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                const inserted = onAutoInsertNote({
+                  drawingId,
+                  pageNum,
+                  xPct: selectedOverlay.xPct,
+                  yPct: selectedOverlay.yPct,
+                  tagRef: selectedOverlay.tag,
+                  severity: selectedOverlay.severity,
+                  status: 'OPEN',
+                  author: selectedOverlay.source === 'GEMINI_AI' ? 'Gemini AI' : 'AI Overlay',
+                  content: `${selectedOverlay.summary} — ${selectedOverlay.recommendation}`,
+                  source: 'AUTO_LOCATE',
+                });
+                onSelectNote(inserted);
+              }}
+              className="inline-flex h-7 items-center gap-1 rounded bg-violet-700 px-2.5 text-[11px] font-semibold text-white hover:bg-violet-800"
+            >
+              <MapPinPlus className="h-3 w-3" />
+              <span>이 영역 핀 노트 추가</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedOverlayId(null)}
+              aria-label="AI 영역 정보 닫기"
+              className="rounded p-1 text-slate-500 hover:bg-white hover:text-slate-800"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Auto-Locate & Auto-Note Insertion Feedback Strip */}
       {autoStatusMsg && (
@@ -931,6 +1161,9 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
   onUploadPdf,
   onRemoveUploadedPdf,
   onRunAiWithCustomPdfs,
+  aiResult,
+  localAuditResult,
+  ruleViolations,
 }) => {
   const [leftId, setLeftId] = useState(leftFocus.drawingId);
   const [rightId, setRightId] = useState(rightFocus.drawingId);
@@ -938,6 +1171,7 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
   const [noteStatusFilter, setNoteStatusFilter] = useState<'ALL' | NoteStatus>('ALL');
   const [uploadRole, setUploadRole] = useState<'PIPING' | 'ELECTRICAL'>('PIPING');
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showAiOverlays, setShowAiOverlays] = useState(true);
 
   // Issue-to-PDF list state
   const [issueListMode, setIssueListMode] = useState<'ISSUES' | 'ALL'>('ISSUES');
@@ -2011,6 +2245,12 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
             onLocalPointerMove={handleLocalPointerMove}
             onLocalPointerLeave={handleLocalPointerLeave}
             onLocalPointerPing={handleTriggerPointerPing}
+            aiResult={aiResult}
+            localAuditResult={localAuditResult}
+            ruleViolations={ruleViolations}
+            evaluatedLoops={evaluatedLoops}
+            showAiOverlays={showAiOverlays}
+            onToggleAiOverlays={() => setShowAiOverlays((v) => !v)}
           />
         </section>
 
@@ -2097,6 +2337,12 @@ export const SplitPdfViewer: React.FC<SplitPdfViewerProps> = ({
             onLocalPointerMove={handleLocalPointerMove}
             onLocalPointerLeave={handleLocalPointerLeave}
             onLocalPointerPing={handleTriggerPointerPing}
+            aiResult={aiResult}
+            localAuditResult={localAuditResult}
+            ruleViolations={ruleViolations}
+            evaluatedLoops={evaluatedLoops}
+            showAiOverlays={showAiOverlays}
+            onToggleAiOverlays={() => setShowAiOverlays((v) => !v)}
           />
         </section>
       </div>

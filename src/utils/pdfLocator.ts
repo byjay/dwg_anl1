@@ -1,6 +1,15 @@
 import type { PDFPageProxy } from 'pdfjs-dist';
 import * as pdfjsLib from 'pdfjs-dist';
-import { DiagramLoopEntry, DrawingPinNote } from '../types/diagram';
+import {
+  DiagramLoopEntry,
+  DiscrepancySeverity,
+  DrawingPinNote,
+  EvaluatedLoopMatch,
+  ParallelAnalyzeResponse,
+  RuleViolationHit,
+} from '../types/diagram';
+import type { LocalPdfAuditResponse } from './localPdfAudit';
+import { resolveLoopPdfTargets } from './diffEngine';
 
 export interface PdfTextBox {
   str: string;
@@ -22,6 +31,27 @@ export interface PdfLocateMatch {
   widthPct: number;
   heightPct: number;
   exact: boolean;
+}
+
+export type AiOverlaySource = 'GEMINI_AI' | 'LOCAL_SCAN' | 'RULE_ENGINE' | 'LOOP_DIFF';
+
+export interface AiTextRegionCandidate {
+  id: string;
+  source: AiOverlaySource;
+  tag: string;
+  severity: DiscrepancySeverity;
+  summary: string;
+  recommendation: string;
+  searchTerms: string[];
+}
+
+export interface AiTextRegionOverlay extends PdfLocateMatch {
+  id: string;
+  source: AiOverlaySource;
+  tag: string;
+  severity: DiscrepancySeverity;
+  summary: string;
+  recommendation: string;
 }
 
 function clampPct(value: number): number {
@@ -117,6 +147,42 @@ export function buildSearchTermsForLoop(
   return terms;
 }
 
+function findSingleBoxMatch(
+  normalizedBoxes: Array<{ box: PdfTextBox; upper: string }>,
+  rawTerm: string,
+  usedKeys?: Set<string>
+): PdfLocateMatch | null {
+  const term = rawTerm.trim().toUpperCase();
+  if (term.length < 3) return null;
+
+  const boxKey = (b: PdfTextBox) =>
+    `${b.leftPct.toFixed(1)}:${b.topPct.toFixed(1)}:${b.str}`;
+
+  const exactHit = normalizedBoxes.find(
+    (nb) => nb.upper === term && (!usedKeys || !usedKeys.has(boxKey(nb.box)))
+  );
+  if (exactHit) {
+    return {
+      matchedTerm: rawTerm,
+      ...exactHit.box,
+      exact: true,
+    };
+  }
+
+  const substrHit = normalizedBoxes.find(
+    (nb) => nb.upper.includes(term) && (!usedKeys || !usedKeys.has(boxKey(nb.box)))
+  );
+  if (substrHit) {
+    return {
+      matchedTerm: rawTerm,
+      ...substrHit.box,
+      exact: true,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Pure matching logic over extracted PDF text boxes. Supports both exact single-span hits
  * and multi-span CAD tag splits (e.g., "PDIT" stacked directly above "111E").
@@ -134,26 +200,8 @@ export function matchTextBoxesForTerms(
 
   // Pass 1: Direct span hit (prefer exact string equality first, then substring)
   for (const rawTerm of searchTerms) {
-    const term = rawTerm.trim().toUpperCase();
-    if (term.length < 3) continue;
-
-    const exactHit = normalizedBoxes.find((nb) => nb.upper === term);
-    if (exactHit) {
-      return {
-        matchedTerm: rawTerm,
-        ...exactHit.box,
-        exact: true,
-      };
-    }
-
-    const substrHit = normalizedBoxes.find((nb) => nb.upper.includes(term));
-    if (substrHit) {
-      return {
-        matchedTerm: rawTerm,
-        ...substrHit.box,
-        exact: true,
-      };
-    }
+    const directHit = findSingleBoxMatch(normalizedBoxes, rawTerm);
+    if (directHit) return directHit;
   }
 
   // Pass 2: Multi-span CAD symbol split (e.g. "PDIT-111E" -> "PDIT" near "111E")
@@ -207,6 +255,183 @@ export function matchTextBoxesForTerms(
 }
 
 /**
+ * Collects prioritized AI/rule/diff text-region candidates relevant to a specific drawing & page.
+ */
+export function extractAiRegionCandidates(params: {
+  drawingId: string;
+  pageNum: number;
+  aiResult?: ParallelAnalyzeResponse | null;
+  localAuditResult?: LocalPdfAuditResponse | null;
+  ruleViolations?: RuleViolationHit[];
+  evaluatedLoops?: EvaluatedLoopMatch[];
+}): AiTextRegionCandidate[] {
+  const {
+    drawingId,
+    pageNum,
+    aiResult,
+    localAuditResult,
+    ruleViolations = [],
+    evaluatedLoops = [],
+  } = params;
+
+  const candidates: AiTextRegionCandidate[] = [];
+  const shortDrawing = drawingId.replace(/^(PR|PD|CI)-/, '');
+  const pushUniqueTerms = (arr: string[]): string[] => {
+    const out: string[] = [];
+    for (const item of arr) {
+      const clean = stripParenthetical(item).trim();
+      if (clean.length >= 3 && !out.includes(clean)) out.push(clean);
+    }
+    return out;
+  };
+
+  // 1. Gemini AI Findings (highest priority: explicit textRegions + tag)
+  if (aiResult) {
+    for (const track of aiResult.tracks) {
+      if (track.status !== 'COMPLETED' || !track.findings) continue;
+      for (let i = 0; i < track.findings.length; i++) {
+        const f = track.findings[i];
+        const evidenceUpper = (f.sourceEvidence || '').toUpperCase();
+        const matchesDrawing =
+          track.drawingIds.includes(drawingId) ||
+          evidenceUpper.includes(drawingId.toUpperCase()) ||
+          evidenceUpper.includes(shortDrawing.toUpperCase());
+        const matchesPage = !f.pageHint || f.pageHint === pageNum;
+        if (!matchesDrawing || !matchesPage) continue;
+
+        const terms = pushUniqueTerms([...(f.textRegions || []), f.tag]);
+        if (terms.length === 0) continue;
+        candidates.push({
+          id: `AI-${track.trackId}-${i}`,
+          source: 'GEMINI_AI',
+          tag: f.tag,
+          severity: f.severity,
+          summary: f.finding,
+          recommendation: f.recommendation,
+          searchTerms: terms,
+        });
+      }
+    }
+  }
+
+  // 2. Local Vector Audit Findings
+  if (localAuditResult) {
+    for (const track of localAuditResult.tracks) {
+      for (const f of track.findings) {
+        if (f.drawingId !== drawingId || f.pageNum !== pageNum) continue;
+        const terms = pushUniqueTerms([f.matchedText, f.tag]);
+        if (terms.length === 0) continue;
+        candidates.push({
+          id: `LOC-${f.id}`,
+          source: 'LOCAL_SCAN',
+          tag: f.tag,
+          severity: f.severity,
+          summary: f.finding,
+          recommendation: f.recommendation,
+          searchTerms: terms,
+        });
+      }
+    }
+  }
+
+  // 3. Rule Engine Violations targeting this drawing/page
+  for (const v of ruleViolations) {
+    if (v.drawingId && v.drawingId !== drawingId) continue;
+    if (v.pageNum && v.pageNum !== pageNum) continue;
+    if (!v.drawingId) continue;
+    const rawTokens = v.tagOrTarget.split(/[\s,/]+/).filter((t) => t.length >= 3);
+    const terms = pushUniqueTerms([v.tagOrTarget, ...rawTokens]);
+    if (terms.length === 0) continue;
+    candidates.push({
+      id: `RULE-${v.id}`,
+      source: 'RULE_ENGINE',
+      tag: v.tagOrTarget || v.ruleCode,
+      severity: v.severity,
+      summary: `${v.ruleNameKo}: ${v.evidence}`,
+      recommendation: v.recommendation || `규칙 ${v.ruleCode} 기준 도면 수정 검토`,
+      searchTerms: terms,
+    });
+  }
+
+  // 4. Loop Cross-Match Discrepancies mapped to this drawing & page
+  for (const loop of evaluatedLoops) {
+    const targets = resolveLoopPdfTargets(loop);
+    const isLeftMatch = targets.left.drawingId === drawingId && targets.left.pageNum === pageNum;
+    const isRightMatch = targets.right.drawingId === drawingId && targets.right.pageNum === pageNum;
+    if (!isLeftMatch && !isRightMatch) continue;
+    if (loop.discrepancies.length === 0 && loop.status === 'MATCHED') continue;
+
+    const side: 'LEFT' | 'RIGHT' = isRightMatch ? 'RIGHT' : 'LEFT';
+    const topDisc = loop.discrepancies[0];
+    const terms = pushUniqueTerms(buildSearchTermsForLoop(loop, side));
+    if (terms.length === 0) continue;
+    candidates.push({
+      id: `LOOP-${loop.id}-${side}`,
+      source: 'LOOP_DIFF',
+      tag: loop.canonicalTag,
+      severity: topDisc?.severity || 'INFO',
+      summary: topDisc ? topDisc.title : `${loop.canonicalTag} (${loop.statusLabelKo})`,
+      recommendation: topDisc?.recommendedAction || `${loop.canonicalTag} 도면 정합성 확인`,
+      searchTerms: terms,
+    });
+  }
+
+  return candidates;
+}
+
+/**
+ * Matches multiple AI/rule/diff candidates against extracted PDF text boxes,
+ * deduplicating overlapping hits on the same coordinates while preserving highest severity.
+ */
+export function matchMultipleTextRegions(
+  boxes: PdfTextBox[],
+  candidates: AiTextRegionCandidate[],
+  maxOverlays = 18
+): AiTextRegionOverlay[] {
+  if (boxes.length === 0 || candidates.length === 0) return [];
+
+  const normalizedBoxes = boxes.map((b) => ({
+    box: b,
+    upper: b.str.trim().toUpperCase(),
+  }));
+
+  const overlays: AiTextRegionOverlay[] = [];
+  const usedCoordKeys = new Set<string>();
+
+  for (const cand of candidates) {
+    if (overlays.length >= maxOverlays) break;
+
+    let candidateMatches = 0;
+    const perCandTermLimit = cand.source === 'GEMINI_AI' ? 3 : 2;
+
+    for (const term of cand.searchTerms) {
+      if (candidateMatches >= perCandTermLimit || overlays.length >= maxOverlays) break;
+      const direct = findSingleBoxMatch(normalizedBoxes, term, usedCoordKeys);
+      const hit = direct || (candidateMatches === 0 ? matchTextBoxesForTerms(boxes, [term]) : null);
+      if (!hit) continue;
+
+      const coordKey = `${Math.round(hit.xPct / 2)}:${Math.round(hit.yPct / 2)}`;
+      if (usedCoordKeys.has(coordKey)) continue;
+      usedCoordKeys.add(coordKey);
+      usedCoordKeys.add(`${hit.leftPct.toFixed(1)}:${hit.topPct.toFixed(1)}:${hit.str}`);
+
+      overlays.push({
+        id: `${cand.id}::${candidateMatches}`,
+        source: cand.source,
+        tag: cand.tag,
+        severity: cand.severity,
+        summary: cand.summary,
+        recommendation: cand.recommendation,
+        ...hit,
+      });
+      candidateMatches += 1;
+    }
+  }
+
+  return overlays;
+}
+
+/**
  * Extracts normalized bounding boxes from a rendered pdf.js page.
  */
 export async function extractPdfTextBoxesFromPage(
@@ -255,6 +480,15 @@ export async function locateTermsOnPdfPage(
 ): Promise<PdfLocateMatch | null> {
   const boxes = await extractPdfTextBoxesFromPage(page);
   return matchTextBoxesForTerms(boxes, searchTerms);
+}
+
+export async function locateAiTextRegionsOnPdfPage(
+  page: PDFPageProxy,
+  candidates: AiTextRegionCandidate[]
+): Promise<AiTextRegionOverlay[]> {
+  if (candidates.length === 0) return [];
+  const boxes = await extractPdfTextBoxesFromPage(page);
+  return matchMultipleTextRegions(boxes, candidates);
 }
 
 /**

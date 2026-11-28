@@ -127,6 +127,15 @@ const AUDIT_RESPONSE_SCHEMA = {
           finding: { type: Type.STRING },
           sourceEvidence: { type: Type.STRING },
           recommendation: { type: Type.STRING },
+          textRegions: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Exact verbatim tag numbers, cable numbers, JB labels, or text spans visible on the drawing to highlight on the PDF canvas.',
+          },
+          pageHint: {
+            type: Type.INTEGER,
+            description: '1-indexed PDF page number where the issue text region appears, if identifiable.',
+          },
         },
         required: ['tag', 'severity', 'category', 'finding', 'sourceEvidence', 'recommendation'],
       },
@@ -221,7 +230,15 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, model: DEFAULT_MODEL_NAME, thinkingLevel: 'HIGH' });
+    res.json({
+      ok: true,
+      model: DEFAULT_MODEL_NAME,
+      thinkingLevel: 'HIGH',
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      catalogCount: DRAWING_CATALOG.length,
+      citationGuardrail: true,
+      supportedDisciplines: ['PIPING', 'ELECTRICAL', 'INSTRUMENT', 'SAFETY_EX', 'POS', 'MAKER'],
+    });
   });
 
   app.get('/api/drawings', (_req, res) => {
